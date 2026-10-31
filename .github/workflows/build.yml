@@ -17,7 +17,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '9.5.1'
+          gradle-version: 'current'
 
       - run: gradle build
 
