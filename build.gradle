@@ -10,9 +10,9 @@ base {
 }
 
 dependencies {
-    minecraft "com.mojang${project.minecraft_version}"
-    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
-    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+    minecraft group: 'com.mojang', name: 'minecraft', version: project.minecraft_version
+    implementation group: 'net.fabricmc', name: 'fabric-loader', version: project.loader_version
+    implementation group: 'net.fabricmc.fabric-api', name: 'fabric-api', version: project.fabric_api_version
 }
 
 processResources {
