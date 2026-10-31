@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "mobtrader",
+  "version": "${version}",
+  "name": "Mob Trader",
+  "description": "Right-click almost any mob to open the normal trading screen.",
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.mobtrader.MobTrader"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.2",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}
