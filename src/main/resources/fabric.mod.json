@@ -4,7 +4,8 @@
   "version": "${version}",
   "name": "Mob Trader",
   "description": "Right-click almost any mob to open the normal trading screen.",
-  "license": "MIT",
+  "license": "ARR",
+  "authors": ["Amptheaxe12"],
   "environment": "*",
   "entrypoints": {
     "main": [
