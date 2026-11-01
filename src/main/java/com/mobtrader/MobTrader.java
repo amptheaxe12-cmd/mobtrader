@@ -288,7 +288,7 @@ public class MobTrader implements ModInitializer {
 
     private static final String DEFAULT_CONFIG = """
             {
-              "requireSneak": false,
+              "requireSneak": true,
               "tradesPerMob": 3,
               "sameTradesPerMob": true,
               "tables": {
