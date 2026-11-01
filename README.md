@@ -126,3 +126,6 @@ gradle build
   Turn on `requireSneak` to get shearing, feeding and horse riding back.
 - Stock resets when you close the screen.
 - This is a mod not a plugin
+
+## Plugin https://github.com/amptheaxe12-cmd/mobtrader-paper
+## Mod https://github.com/amptheaxe12-cmd/mobtrader
