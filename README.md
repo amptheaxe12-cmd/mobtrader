@@ -125,3 +125,4 @@ gradle build
 - A mob's own right-click action is pre-empted when it has a trade table.
   Turn on `requireSneak` to get shearing, feeding and horse riding back.
 - Stock resets when you close the screen.
+- This is a mod not a plugin
