@@ -16,6 +16,8 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.boss.enderdragon.EnderDragonPart;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.MerchantMenu;
 import net.minecraft.world.item.Item;
@@ -35,9 +37,12 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Random;
+import java.util.UUID;
 
 public class MobTrader implements ModInitializer {
 
@@ -45,6 +50,20 @@ public class MobTrader implements ModInitializer {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static Config config = new Config();
+
+    /**
+     * Live merchants, one per mob, so a trade's remaining uses stick to that mob
+     * instead of resetting every time the screen is opened. Bounded, oldest out
+     * first, because mobs die and we never hear about it.
+     */
+    private static final int STOCK_LIMIT = 500;
+    private static final Map<UUID, MobMerchant> STOCK = Collections.synchronizedMap(
+            new LinkedHashMap<UUID, MobMerchant>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<UUID, MobMerchant> eldest) {
+                    return size() > STOCK_LIMIT;
+                }
+            });
 
     @Override
     public void onInitialize() {
@@ -54,6 +73,12 @@ public class MobTrader implements ModInitializer {
             if (level.isClientSide()) return InteractionResult.PASS;
             if (hand != InteractionHand.MAIN_HAND) return InteractionResult.PASS;
             if (!(player instanceof ServerPlayer serverPlayer)) return InteractionResult.PASS;
+
+            // The ender dragon is hit as one of its parts, so walk up to the dragon itself.
+            if (entity instanceof EnderDragonPart part) {
+                entity = part.parentMob;
+            }
+
             if (!(entity instanceof LivingEntity mob)) return InteractionResult.PASS;
             if (entity instanceof Player) return InteractionResult.PASS;
 
@@ -63,10 +88,16 @@ public class MobTrader implements ModInitializer {
                 return InteractionResult.PASS;
             }
 
-            MerchantOffers offers = offersFor(mob);
-            if (offers.isEmpty()) return InteractionResult.PASS;
+            MobMerchant merchant = merchantFor(mob);
+            if (merchant == null) return InteractionResult.PASS;
 
-            MobMerchant merchant = new MobMerchant(offers);
+            // One shopper at a time, or two players drain the same one-use trade.
+            Player current = merchant.getTradingPlayer();
+            if (current != null && current != serverPlayer) {
+                return InteractionResult.PASS;
+            }
+
+            MerchantOffers offers = merchant.getOffers();
             merchant.setTradingPlayer(serverPlayer);
 
             Component title = mob.getDisplayName();
@@ -86,16 +117,33 @@ public class MobTrader implements ModInitializer {
     private static class MobMerchant implements Merchant {
 
         private final MerchantOffers offers;
+        private final LivingEntity mob;
         private Player tradingPlayer;
         private int xp;
 
-        MobMerchant(MerchantOffers offers) {
+        MobMerchant(MerchantOffers offers, LivingEntity mob) {
             this.offers = offers;
+            this.mob = mob;
         }
 
+        /**
+         * Vanilla calls this with the player when the screen opens and with null
+         * when it closes, which is exactly where the mob gets frozen and thawed.
+         */
         @Override
         public void setTradingPlayer(Player player) {
             this.tradingPlayer = player;
+
+            if (mob instanceof Mob living) {
+                if (player != null) {
+                    living.setTarget(null);
+                    living.getNavigation().stop();
+                    living.setNoAi(true);
+                } else {
+                    living.setNoAi(false);
+                    living.setTarget(null);
+                }
+            }
         }
 
         @Override
@@ -193,6 +241,21 @@ public class MobTrader implements ModInitializer {
         return new Config();
     }
 
+    /** Returns this mob's merchant, building it the first time it is opened. */
+    private static MobMerchant merchantFor(LivingEntity mob) {
+        UUID id = mob.getUUID();
+
+        MobMerchant existing = STOCK.get(id);
+        if (existing != null) return existing;
+
+        MerchantOffers offers = offersFor(mob);
+        if (offers.isEmpty()) return null;
+
+        MobMerchant merchant = new MobMerchant(offers, mob);
+        STOCK.put(id, merchant);
+        return merchant;
+    }
+
     private static MerchantOffers offersFor(LivingEntity mob) {
         MerchantOffers offers = new MerchantOffers();
 
@@ -288,7 +351,7 @@ public class MobTrader implements ModInitializer {
 
     private static final String DEFAULT_CONFIG = """
             {
-              "requireSneak": true,
+              "requireSneak": false,
               "tradesPerMob": 3,
               "sameTradesPerMob": true,
               "tables": {
@@ -545,6 +608,18 @@ public class MobTrader implements ModInitializer {
                   { "buy": "minecraft:emerald", "buyCount": 24, "buyCountMax": 48, "sell": "minecraft:totem_of_undying", "sellCount": 1, "maxUses": 1 },
                   { "buy": "minecraft:emerald", "buyCount": 16, "buyCountMax": 36, "sell": "minecraft:enchanted_golden_apple", "sellCount": 1, "maxUses": 1 },
                   { "buy": "minecraft:emerald", "buyCount": 4, "buyCountMax": 12, "sell": "minecraft:emerald_block", "sellCount": 1, "maxUses": 2 }
+                ],
+                "minecraft:wither": [
+                  { "buy": "minecraft:soul_sand", "buyCount": 12, "buyCountMax": 32, "sell": "minecraft:wither_rose", "sellCount": 1, "sellCountMax": 4 },
+                  { "buy": "minecraft:coal", "buyCount": 24, "buyCountMax": 56, "sell": "minecraft:wither_skeleton_skull", "sellCount": 1, "maxUses": 2 },
+                  { "buy": "minecraft:wither_skeleton_skull", "buyCount": 3, "sell": "minecraft:nether_star", "sellCount": 1, "maxUses": 1 },
+                  { "buy": "minecraft:soul_sand", "buyCount": 32, "buyCountMax": 64, "sell": "minecraft:netherite_scrap", "sellCount": 1, "sellCountMax": 2, "maxUses": 2 }
+                ],
+                "minecraft:ender_dragon": [
+                  { "buy": "minecraft:ender_pearl", "buyCount": 12, "buyCountMax": 32, "sell": "minecraft:dragon_breath", "sellCount": 1, "sellCountMax": 4 },
+                  { "buy": "minecraft:ender_eye", "buyCount": 8, "buyCountMax": 20, "sell": "minecraft:dragon_head", "sellCount": 1, "maxUses": 1 },
+                  { "buy": "minecraft:ender_pearl", "buyCount": 32, "buyCountMax": 64, "sell": "minecraft:dragon_egg", "sellCount": 1, "maxUses": 1 },
+                  { "buy": "minecraft:emerald", "buyCount": 24, "buyCountMax": 48, "sell": "minecraft:elytra", "sellCount": 1, "maxUses": 1, "enchantLevels": 20, "enchantLevelsMax": 30 }
                 ],
                 "minecraft:warden": [
                   { "buy": "minecraft:echo_shard", "buyCount": 1, "buyCountMax": 3, "sell": "minecraft:sculk", "sellCount": 4, "sellCountMax": 16 },
