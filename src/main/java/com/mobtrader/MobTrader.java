@@ -2,7 +2,6 @@ package com.mobtrader;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.google.gson.reflect.TypeToken;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.player.UseEntityCallback;
 import net.fabricmc.loader.api.FabricLoader;
@@ -17,8 +16,6 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.Mob;
-import net.minecraft.world.entity.boss.enderdragon.EnderDragonPart;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.MerchantMenu;
 import net.minecraft.world.item.Item;
@@ -29,22 +26,18 @@ import net.minecraft.world.item.trading.ItemCost;
 import net.minecraft.world.item.trading.Merchant;
 import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.item.trading.MerchantOffers;
-import net.minecraft.world.phys.Vec3;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.LinkedHashMap;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Random;
-import java.util.UUID;
 
 public class MobTrader implements ModInitializer {
 
@@ -52,23 +45,6 @@ public class MobTrader implements ModInitializer {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static Config config = new Config();
-
-    /**
-     * Live merchants, one per mob, so a trade's remaining uses stick to that mob
-     * instead of resetting every time the screen is opened. Bounded, oldest out
-     * first, because mobs die and we never hear about it.
-     */
-    /** Squared distance inside which a hunting mob refuses to trade: 4 blocks. */
-    private static final double MELEE_RANGE_SQR = 16.0;
-
-    private static final int STOCK_LIMIT = 500;
-    private static final Map<UUID, MobMerchant> STOCK = Collections.synchronizedMap(
-            new LinkedHashMap<UUID, MobMerchant>(64, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<UUID, MobMerchant> eldest) {
-                    return size() > STOCK_LIMIT;
-                }
-            });
 
     @Override
     public void onInitialize() {
@@ -78,12 +54,6 @@ public class MobTrader implements ModInitializer {
             if (level.isClientSide()) return InteractionResult.PASS;
             if (hand != InteractionHand.MAIN_HAND) return InteractionResult.PASS;
             if (!(player instanceof ServerPlayer serverPlayer)) return InteractionResult.PASS;
-
-            // The ender dragon is hit as one of its parts, so walk up to the dragon itself.
-            if (entity instanceof EnderDragonPart part) {
-                entity = part.parentMob;
-            }
-
             if (!(entity instanceof LivingEntity mob)) return InteractionResult.PASS;
             if (entity instanceof Player) return InteractionResult.PASS;
 
@@ -93,25 +63,10 @@ public class MobTrader implements ModInitializer {
                 return InteractionResult.PASS;
             }
 
-            // A mob swinging at you will not stop to do business. Ranged mobs and
-            // bosses track you permanently, so only block when it is close enough
-            // to actually be hitting you -- back off a few blocks and trade.
-            if (mob instanceof Mob hostile
-                    && hostile.getTarget() == serverPlayer
-                    && hostile.distanceToSqr(serverPlayer) < MELEE_RANGE_SQR) {
-                return InteractionResult.PASS;
-            }
+            MerchantOffers offers = offersFor(mob);
+            if (offers.isEmpty()) return InteractionResult.PASS;
 
-            MobMerchant merchant = merchantFor(mob);
-            if (merchant == null) return InteractionResult.PASS;
-
-            // One shopper at a time, or two players drain the same one-use trade.
-            Player current = merchant.getTradingPlayer();
-            if (current != null && current != serverPlayer) {
-                return InteractionResult.PASS;
-            }
-
-            MerchantOffers offers = merchant.getOffers();
+            MobMerchant merchant = new MobMerchant(offers);
             merchant.setTradingPlayer(serverPlayer);
 
             Component title = mob.getDisplayName();
@@ -131,34 +86,16 @@ public class MobTrader implements ModInitializer {
     private static class MobMerchant implements Merchant {
 
         private final MerchantOffers offers;
-        private final LivingEntity mob;
         private Player tradingPlayer;
         private int xp;
 
-        MobMerchant(MerchantOffers offers, LivingEntity mob) {
+        MobMerchant(MerchantOffers offers) {
             this.offers = offers;
-            this.mob = mob;
         }
 
-        /**
-         * Vanilla calls this with the player when the screen opens and with null
-         * when it closes, which is exactly where the mob gets frozen and thawed.
-         */
         @Override
         public void setTradingPlayer(Player player) {
             this.tradingPlayer = player;
-
-            if (mob instanceof Mob living) {
-                if (player != null) {
-                    living.setTarget(null);
-                    living.getNavigation().stop();
-                    living.setNoAi(true);
-                    living.setDeltaMovement(Vec3.ZERO);
-                } else {
-                    living.setNoAi(false);
-                    living.setTarget(null);
-                }
-            }
         }
 
         @Override
@@ -178,11 +115,6 @@ public class MobTrader implements ModInitializer {
         @Override
         public void notifyTrade(MerchantOffer offer) {
             offer.increaseUses();
-
-            int index = offers.indexOf(offer);
-            if (index >= 0) {
-                saveUses(mob, index, offer.getUses());
-            }
         }
 
         @Override
@@ -261,29 +193,6 @@ public class MobTrader implements ModInitializer {
         return new Config();
     }
 
-    /** Returns this mob's merchant, building it the first time it is opened. */
-    private static MobMerchant merchantFor(LivingEntity mob) {
-        UUID id = mob.getUUID();
-
-        MobMerchant existing = STOCK.get(id);
-        if (existing != null) return existing;
-
-        MerchantOffers offers = offersFor(mob);
-        if (offers.isEmpty()) return null;
-
-        // Re-apply anything already bought from this mob in a previous session.
-        for (int i = 0; i < offers.size(); i++) {
-            int used = loadUses(mob, i);
-            for (int u = 0; u < used; u++) {
-                offers.get(i).increaseUses();
-            }
-        }
-
-        MobMerchant merchant = new MobMerchant(offers, mob);
-        STOCK.put(id, merchant);
-        return merchant;
-    }
-
     private static MerchantOffers offersFor(LivingEntity mob) {
         MerchantOffers offers = new MerchantOffers();
 
@@ -355,58 +264,6 @@ public class MobTrader implements ModInitializer {
             System.err.println("[" + MOD_ID + "] could not enchant " + stack + ": " + e);
             return stack;
         }
-    }
-
-    /**
-     * Used counts live in config/mobtrader-stock.json, keyed by the mob's UUID,
-     * so stock survives a restart: buy a warden's netherite sword and that
-     * warden never sells another one.
-     *
-     * Trade order is seeded from the mob's UUID, so index 0 is always the same
-     * trade for that mob across sessions.
-     */
-    private static Map<String, Map<String, Integer>> savedUses = null;
-
-    private static Path stockPath() {
-        return FabricLoader.getInstance().getConfigDir().resolve("mobtrader-stock.json");
-    }
-
-    private static Map<String, Map<String, Integer>> stock() {
-        if (savedUses == null) {
-            savedUses = new HashMap<>();
-            Path file = stockPath();
-            try {
-                if (Files.exists(file)) {
-                    Type type = new TypeToken<Map<String, Map<String, Integer>>>() {}.getType();
-                    Map<String, Map<String, Integer>> loaded =
-                            GSON.fromJson(Files.readString(file, StandardCharsets.UTF_8), type);
-                    if (loaded != null) savedUses = loaded;
-                }
-            } catch (Exception e) {
-                System.err.println("[" + MOD_ID + "] could not read stock file, starting fresh: " + e);
-            }
-        }
-        return savedUses;
-    }
-
-    private static void saveUses(LivingEntity mob, int index, int uses) {
-        Map<String, Map<String, Integer>> all = stock();
-        all.computeIfAbsent(mob.getUUID().toString(), k -> new HashMap<>())
-           .put(String.valueOf(index), uses);
-        try {
-            Path file = stockPath();
-            Files.createDirectories(file.getParent());
-            Files.writeString(file, GSON.toJson(all), StandardCharsets.UTF_8);
-        } catch (Exception e) {
-            System.err.println("[" + MOD_ID + "] could not write stock file: " + e);
-        }
-    }
-
-    private static int loadUses(LivingEntity mob, int index) {
-        Map<String, Integer> forMob = stock().get(mob.getUUID().toString());
-        if (forMob == null) return 0;
-        Integer uses = forMob.get(String.valueOf(index));
-        return uses == null ? 0 : uses;
     }
 
     private static int roll(Random random, int min, int max) {
@@ -688,18 +545,6 @@ public class MobTrader implements ModInitializer {
                   { "buy": "minecraft:emerald", "buyCount": 24, "buyCountMax": 48, "sell": "minecraft:totem_of_undying", "sellCount": 1, "maxUses": 1 },
                   { "buy": "minecraft:emerald", "buyCount": 16, "buyCountMax": 36, "sell": "minecraft:enchanted_golden_apple", "sellCount": 1, "maxUses": 1 },
                   { "buy": "minecraft:emerald", "buyCount": 4, "buyCountMax": 12, "sell": "minecraft:emerald_block", "sellCount": 1, "maxUses": 2 }
-                ],
-                "minecraft:wither": [
-                  { "buy": "minecraft:soul_sand", "buyCount": 12, "buyCountMax": 32, "sell": "minecraft:wither_rose", "sellCount": 1, "sellCountMax": 4 },
-                  { "buy": "minecraft:coal", "buyCount": 24, "buyCountMax": 56, "sell": "minecraft:wither_skeleton_skull", "sellCount": 1, "maxUses": 2 },
-                  { "buy": "minecraft:wither_skeleton_skull", "buyCount": 3, "sell": "minecraft:nether_star", "sellCount": 1, "maxUses": 1 },
-                  { "buy": "minecraft:soul_sand", "buyCount": 32, "buyCountMax": 64, "sell": "minecraft:netherite_scrap", "sellCount": 1, "sellCountMax": 2, "maxUses": 2 }
-                ],
-                "minecraft:ender_dragon": [
-                  { "buy": "minecraft:ender_pearl", "buyCount": 12, "buyCountMax": 32, "sell": "minecraft:dragon_breath", "sellCount": 1, "sellCountMax": 4 },
-                  { "buy": "minecraft:ender_eye", "buyCount": 8, "buyCountMax": 20, "sell": "minecraft:dragon_head", "sellCount": 1, "maxUses": 1 },
-                  { "buy": "minecraft:ender_pearl", "buyCount": 32, "buyCountMax": 64, "sell": "minecraft:dragon_egg", "sellCount": 1, "maxUses": 1 },
-                  { "buy": "minecraft:emerald", "buyCount": 24, "buyCountMax": 48, "sell": "minecraft:elytra", "sellCount": 1, "maxUses": 1, "enchantLevels": 20, "enchantLevelsMax": 30 }
                 ],
                 "minecraft:warden": [
                   { "buy": "minecraft:echo_shard", "buyCount": 1, "buyCountMax": 3, "sell": "minecraft:sculk", "sellCount": 4, "sellCountMax": 16 },
