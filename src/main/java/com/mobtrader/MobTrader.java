@@ -163,6 +163,11 @@ public class MobTrader implements ModInitializer {
         @Override
         public void notifyTrade(MerchantOffer offer) {
             offer.increaseUses();
+
+            int index = offers.indexOf(offer);
+            if (index >= 0) {
+                saveUses(mob, index, offer.getUses());
+            }
         }
 
         @Override
@@ -251,6 +256,14 @@ public class MobTrader implements ModInitializer {
         MerchantOffers offers = offersFor(mob);
         if (offers.isEmpty()) return null;
 
+        // Re-apply anything already bought from this mob in a previous session.
+        for (int i = 0; i < offers.size(); i++) {
+            int used = loadUses(mob, i);
+            for (int u = 0; u < used; u++) {
+                offers.get(i).increaseUses();
+            }
+        }
+
         MobMerchant merchant = new MobMerchant(offers, mob);
         STOCK.put(id, merchant);
         return merchant;
@@ -329,6 +342,40 @@ public class MobTrader implements ModInitializer {
         }
     }
 
+    /**
+     * Used counts are written onto the mob as entity tags, which Minecraft saves
+     * with the world. Stock therefore survives a restart: buy a warden's
+     * netherite sword and that warden never sells another one.
+     *
+     * Trade order is seeded from the mob's UUID, so index 0 is always the same
+     * trade for that mob across sessions.
+     */
+    private static final String USES_PREFIX = "mobtrader_u";
+
+    private static void saveUses(LivingEntity mob, int index, int uses) {
+        String prefix = USES_PREFIX + index + "_";
+        for (String tag : new ArrayList<>(mob.getTags())) {
+            if (tag.startsWith(prefix)) {
+                mob.removeTag(tag);
+            }
+        }
+        mob.addTag(prefix + uses);
+    }
+
+    private static int loadUses(LivingEntity mob, int index) {
+        String prefix = USES_PREFIX + index + "_";
+        for (String tag : mob.getTags()) {
+            if (tag.startsWith(prefix)) {
+                try {
+                    return Integer.parseInt(tag.substring(prefix.length()));
+                } catch (NumberFormatException e) {
+                    return 0;
+                }
+            }
+        }
+        return 0;
+    }
+
     private static int roll(Random random, int min, int max) {
         int low = Math.max(1, min);
         if (max <= low) return low;
@@ -351,7 +398,7 @@ public class MobTrader implements ModInitializer {
 
     private static final String DEFAULT_CONFIG = """
             {
-              "requireSneak": false,
+              "requireSneak": true,
               "tradesPerMob": 3,
               "sameTradesPerMob": true,
               "tables": {
