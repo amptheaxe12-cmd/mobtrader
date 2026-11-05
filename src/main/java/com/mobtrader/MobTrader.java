@@ -2,6 +2,7 @@ package com.mobtrader;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.reflect.TypeToken;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.player.UseEntityCallback;
 import net.fabricmc.loader.api.FabricLoader;
@@ -32,12 +33,12 @@ import net.minecraft.world.item.trading.MerchantOffers;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -343,37 +344,55 @@ public class MobTrader implements ModInitializer {
     }
 
     /**
-     * Used counts are written onto the mob as entity tags, which Minecraft saves
-     * with the world. Stock therefore survives a restart: buy a warden's
-     * netherite sword and that warden never sells another one.
+     * Used counts live in config/mobtrader-stock.json, keyed by the mob's UUID,
+     * so stock survives a restart: buy a warden's netherite sword and that
+     * warden never sells another one.
      *
      * Trade order is seeded from the mob's UUID, so index 0 is always the same
      * trade for that mob across sessions.
      */
-    private static final String USES_PREFIX = "mobtrader_u";
+    private static Map<String, Map<String, Integer>> savedUses = null;
 
-    private static void saveUses(LivingEntity mob, int index, int uses) {
-        String prefix = USES_PREFIX + index + "_";
-        for (String tag : new ArrayList<>(mob.getTags())) {
-            if (tag.startsWith(prefix)) {
-                mob.removeTag(tag);
+    private static Path stockPath() {
+        return FabricLoader.getInstance().getConfigDir().resolve("mobtrader-stock.json");
+    }
+
+    private static Map<String, Map<String, Integer>> stock() {
+        if (savedUses == null) {
+            savedUses = new HashMap<>();
+            Path file = stockPath();
+            try {
+                if (Files.exists(file)) {
+                    Type type = new TypeToken<Map<String, Map<String, Integer>>>() {}.getType();
+                    Map<String, Map<String, Integer>> loaded =
+                            GSON.fromJson(Files.readString(file, StandardCharsets.UTF_8), type);
+                    if (loaded != null) savedUses = loaded;
+                }
+            } catch (Exception e) {
+                System.err.println("[" + MOD_ID + "] could not read stock file, starting fresh: " + e);
             }
         }
-        mob.addTag(prefix + uses);
+        return savedUses;
+    }
+
+    private static void saveUses(LivingEntity mob, int index, int uses) {
+        Map<String, Map<String, Integer>> all = stock();
+        all.computeIfAbsent(mob.getUUID().toString(), k -> new HashMap<>())
+           .put(String.valueOf(index), uses);
+        try {
+            Path file = stockPath();
+            Files.createDirectories(file.getParent());
+            Files.writeString(file, GSON.toJson(all), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            System.err.println("[" + MOD_ID + "] could not write stock file: " + e);
+        }
     }
 
     private static int loadUses(LivingEntity mob, int index) {
-        String prefix = USES_PREFIX + index + "_";
-        for (String tag : mob.getTags()) {
-            if (tag.startsWith(prefix)) {
-                try {
-                    return Integer.parseInt(tag.substring(prefix.length()));
-                } catch (NumberFormatException e) {
-                    return 0;
-                }
-            }
-        }
-        return 0;
+        Map<String, Integer> forMob = stock().get(mob.getUUID().toString());
+        if (forMob == null) return 0;
+        Integer uses = forMob.get(String.valueOf(index));
+        return uses == null ? 0 : uses;
     }
 
     private static int roll(Random random, int min, int max) {
