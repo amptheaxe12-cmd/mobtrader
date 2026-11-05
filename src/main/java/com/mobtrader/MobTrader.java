@@ -29,6 +29,7 @@ import net.minecraft.world.item.trading.ItemCost;
 import net.minecraft.world.item.trading.Merchant;
 import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.item.trading.MerchantOffers;
+import net.minecraft.world.phys.Vec3;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -57,6 +58,9 @@ public class MobTrader implements ModInitializer {
      * instead of resetting every time the screen is opened. Bounded, oldest out
      * first, because mobs die and we never hear about it.
      */
+    /** Squared distance inside which a hunting mob refuses to trade: 4 blocks. */
+    private static final double MELEE_RANGE_SQR = 16.0;
+
     private static final int STOCK_LIMIT = 500;
     private static final Map<UUID, MobMerchant> STOCK = Collections.synchronizedMap(
             new LinkedHashMap<UUID, MobMerchant>(64, 0.75f, true) {
@@ -86,6 +90,15 @@ public class MobTrader implements ModInitializer {
             if (entity instanceof Merchant) return InteractionResult.PASS;
 
             if (config.requireSneak && !serverPlayer.isShiftKeyDown()) {
+                return InteractionResult.PASS;
+            }
+
+            // A mob swinging at you will not stop to do business. Ranged mobs and
+            // bosses track you permanently, so only block when it is close enough
+            // to actually be hitting you -- back off a few blocks and trade.
+            if (mob instanceof Mob hostile
+                    && hostile.getTarget() == serverPlayer
+                    && hostile.distanceToSqr(serverPlayer) < MELEE_RANGE_SQR) {
                 return InteractionResult.PASS;
             }
 
@@ -140,6 +153,7 @@ public class MobTrader implements ModInitializer {
                     living.setTarget(null);
                     living.getNavigation().stop();
                     living.setNoAi(true);
+                    living.setDeltaMovement(Vec3.ZERO);
                 } else {
                     living.setNoAi(false);
                     living.setTarget(null);
